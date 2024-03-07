@@ -9,7 +9,7 @@ app = Flask(__name__)
 CORS(app)
 app.config['CORS_HEADERS'] = 'Content-Type'
 
-reader=easyocr.Reader(["fr"],gpu=False)
+reader=easyocr.Reader(["fr"],gpu=True)
 @app.route('/')
 def hello_world():  # put application's code here
     return 'Hello World!'
