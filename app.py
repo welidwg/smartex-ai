@@ -3,16 +3,134 @@ import numpy
 from flask import Flask, request, jsonify
 import cv2
 from flask_cors import CORS
+from joblib import load
+from datetime import datetime, timedelta
+import pandas as pd
+import requests
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import numpy as np
+from prophet import Prophet
+from sklearn.metrics import r2_score, mean_absolute_error
 import matplotlib.pyplot as plt
 
 app = Flask(__name__)
 CORS(app)
 app.config['CORS_HEADERS'] = 'Content-Type'
+laravelUrl = "http://127.0.0.1:8000/api/hist/"
 
-reader=easyocr.Reader(["fr"],gpu=True)
+reader = easyocr.Reader(["fr"], gpu=True)
+
+
 @app.route('/')
 def hello_world():  # put application's code here
     return 'Hello World!'
+
+
+@app.route('/predicition/mll', methods=['POST'])
+def prediciton_mll():
+    try:
+        body = request.json  # recupertion d'id machine
+        id_machine = body['id_machine']
+        response = requests.get(f"{laravelUrl}{id_machine}")
+        dataset = []
+        for entry in response.json():
+            data = {
+                'id_machine': entry['id_machine'],
+                'date_heure': entry['date_heure']
+            }
+            dataset.append(data)
+        df_n = pd.DataFrame(dataset)
+        df_n['date_heure'] = pd.to_datetime(df_n['date_heure'])
+        df_n.sort_values(by='date_heure', inplace=True, ascending=True)
+        df_n['diff_temps'] = df_n.groupby('id_machine')['date_heure'].diff().dt.total_seconds()
+        df_n['diff_temps'] = df_n.groupby('id_machine')['diff_temps'].transform(lambda x: x.fillna(x.median()))
+        model = RandomForestRegressor()
+        X = pd.DataFrame(df_n['id_machine'], columns=['id_machine'])
+        y = df_n['diff_temps']
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        mae = mean_absolute_error(y_test, y_pred)
+        mae_percentage = (mae / y_test.mean()) * 100
+        print(f"MAE : {mae_percentage:.2f}%")
+
+
+        nouvelles_donnees = pd.DataFrame({'id_machine': [id_machine]})
+        prochaine_diff_temps = model.predict(nouvelles_donnees)[0]
+        derniere_date_heure = df_n['date_heure'].max()
+        delai_temps = timedelta(seconds=prochaine_diff_temps)
+        prochaine_date_heure_predite = derniere_date_heure + delai_temps
+        return jsonify({"id_machine": id_machine, "next": prochaine_date_heure_predite})
+    except Exception as e:
+        return jsonify({'message': str(e), 'type': "error"}), 500
+
+
+@app.route('/prediciton/ml', methods=['POST'])
+def prediciton_ml():
+    try:
+
+        body = request.json  # recupertion d'id machine
+        id_machine = body['id_machine']
+        response = requests.get(f"{laravelUrl}{id_machine}")
+        dataset = []
+        for entry in response.json():
+            data = {
+                'id_machine': entry['id_machine'],
+                'date_heure': entry['date_heure']
+            }
+            dataset.append(data)
+        df_n = pd.DataFrame(dataset)
+
+
+        df_n['date_heure'] = pd.to_datetime(df_n['date_heure'])
+
+        machine_data = df_n[df_n['id_machine'] == id_machine]
+        machine_data.rename(columns={'date_heure': 'ds', 'id_machine': 'y'}, inplace=True)
+        model = Prophet()
+        model.fit(machine_data)
+        future = model.make_future_dataframe(periods=1)
+        forecast = model.predict(future)
+        next_date = forecast['ds'].iloc[-1]
+        return jsonify({"id_machine": id_machine, "next": next_date})
+
+    except Exception as e:
+        return jsonify({'message': str(e), 'type': "error"}), 500
+
+
+@app.route('/predicition', methods=['POST'])
+def prediciton_machine():
+    try:
+        body = request.json
+        id_machine = body['id_machine']
+        response = requests.get(f"{laravelUrl}{id_machine}")
+        dataset = []
+        for entry in response.json():
+            data = {
+                'id_machine': entry['id_machine'],
+                'date_heure': entry['date_heure']
+            }
+            dataset.append(data)
+
+        df_n = pd.DataFrame(dataset)
+        print(df_n.head())
+
+        df_n['date_heure'] = pd.to_datetime(df_n['date_heure'], dayfirst=False)
+        df_n.sort_values(by='date_heure', inplace=True)
+
+        df_n['time_diff'] = df_n.groupby('id_machine')['date_heure'].diff()
+        df_n['time_diff'] = df_n.groupby('id_machine')['time_diff'].transform(lambda x: x.fillna(x.median()))
+        avg_time_diff = df_n[df_n['id_machine'] == id_machine]['time_diff'].mean()
+
+        last_timestamp = df_n[df_n['id_machine'] == id_machine]['date_heure'].max()
+
+        next_timestamp = last_timestamp + avg_time_diff
+        return jsonify({"id_machine": id_machine})
+
+    except Exception as e:
+        return jsonify({'message': str(e), 'type': "error"}), 500
 
 
 @app.route('/process_image', methods=['POST'])
@@ -30,8 +148,8 @@ def process_image():
         # plt.title('Image reçue dans Flask')
         # plt.axis('off')
         # plt.show()
-        text_result=reader.readtext(cropped_image)
-        text=[result[1] for result in text_result]
+        text_result = reader.readtext(cropped_image)
+        text = [result[1] for result in text_result]
         return jsonify({'text': text})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
